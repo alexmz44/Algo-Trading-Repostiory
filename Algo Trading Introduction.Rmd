@@ -352,7 +352,7 @@ add.rule(strategy = strategy.st,
                           orderqty = 100,
                           ordertype = "stoplimit",
                           orderside = "long",
-                          threshold = .0005,
+                          threshold = .005,
                           prefer = "High",
                           TxnFees = -10,
                           replace = FALSE
@@ -450,26 +450,16 @@ If checkBlotterUpdate returns true we save the results and our strategy (save.st
 
 
 
-# DATA QUALITY - Yahoo!
-```{r}
-getSymbols("SPY",
-           src = "yahoo",
-           index.class = c("POSIXt", "POSIXct"),
-           from = "2010-01-01",
-           to = "2011-01-01",
-           adjust = TRUE)
-yahoo.SPY <- SPY 
-summary(yahoo.SPY)
-#chart
-chart.Posn(portfolio.st, Symbol = "SPY", Dates="2008-01-01::2008-07-01", 
-           TA="add_SMA(n = 10, col = 2); add_SMA(n = 30, col = 4)")
-```
+
+
+
 
 # Checking the Trades
 ```{r}
 # reload the luxor strategy from before
 rm.strat(portfolio.st)
 rm.strat(account.st)
+# remember these were all saved into objects
 symbols <- basic_symbols()
 getSymbols(Symbols = symbols, src = "yahoo", index.class = "POSIXct", 
            from = start_date, to = end_date, adjust = adjustment)
@@ -484,4 +474,53 @@ updateAcct(account.st)
 updateEndEq(account.st)
 ```
 
+#Candle Chart on SPY
+```{r}
+chart.Posn(portfolio.st, Symbol = "SPY", Dates="2008-01-01::2008-07-01", 
+           TA="add_SMA(n = 10, col = 2); add_SMA(n = 30, col = 4)")
+```
+
+Notice how the strategy called for a long entry when SMA(10) was greater than or equal to SMA(30). The graph shows that our portfolio didnt execute the trade until two days after. 
+
+To examine it further. Stock data table:
+```{r}
+le <- as.data.frame(mktdata["2008-02-25::2008-03-07", c(1:4, 7:10)])
+
+DT::datatable(le, 
+              rownames = T,
+              extensions = c("Scroller", "FixedColumns"),
+              options= list(pageLength = 5,
+                           autoWidth = T,
+                           deferRender = T,
+                           scrollX = 200,
+                           scroller = T,
+                           fixedColumns = T),
+                      caption = htmltools::tags$caption(
+                        "Table 6.1: mkt mktdata object for Feb. 25, 2008 to Mar. 7, 2008"))
+```
+Order book table :
+```{r}
+ob <- as.data.frame(getOrderBook(portfolio.st)$SPY)
+DT::datatable(ob, 
+              rownames = FALSE,
+              filter = "top",
+              extensions = c("Scroller", "FixedColumns"), 
+              options = list(pageLength = 5, 
+                             autoWidth = TRUE, 
+                             deferRender = TRUE, 
+                             scrollX = 200, 
+                             scroller = TRUE, 
+                             fixedColumns = TRUE), 
+              caption = htmltools::tags$caption(
+                  "Table 6.2: Order book for SPY"))
+```
+if we look at Rule we see the value of EnterLONG. These are the labels of the rules we set up in our strategy. Now you can see how all these labels we assigned earlier start coming together.
+
+On 2008-03-06T00:00:00Z we get a market order to vacate all long positions and take a short positions. We see this charted in Fig. 6.1 identified with a red arrow on the same candle one bar after the cross. We stay in that position until 2008-04-01T00:00:00Z when we flip back long.
+
+If you flip to page 5 of Table 6.2, on 2009-11-03T00:00:00Z you will see we had an order replaced (Order.Status). Let’s plot this time frame and see what was going on.
+
+```{r}
+chart.Posn(portfolio.st, Symbol = "SPY", Dates = "2009-08-01::2009-12-31", TA = "add_SMA(n = 10, col = 2); add_SMA(n = 30, col = 4)")
+```
 
