@@ -1,0 +1,265 @@
+---
+title: "Reproducible-Finance-in-R"
+author: "Alexander Martinez"
+date: "7/27/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+```{r}
+library(PerformanceAnalytics)
+library(quantmod)
+library(xts)
+library(tidyverse)# dplyr, ggplot, tibble, tidyr
+library(tidyquant)
+library(timetk)# great for converting xts to tibble or tibble to xts
+library(tibbletime) # for time aware tibbles and rolling functions
+
+library(highcharter)
+```
+
+
+# Project: Analyze and visualize data for 5 ETFs
+
+
+
+Import Data
++ 5 ETFs
+ - SPY
+ - EFA
+ - IJS
+ - EEM
+ - AGG
+ 
+Import the Prices from Yahoo
+```{r}
+symbols <- c("SPY","EFA", "IJS", "EEM","AGG")
+prices <- getSymbols(symbols, 
+                     src = "yahoo",
+                     from = "2012-12-31",
+                     to = "2017-12-31",
+                     auto.assign = TRUE,
+                     warnings = FALSE) %>% 
+  map(~Ad(get(.))) %>% 
+  reduce(merge) %>% 
+  `colnames<-`(symbols)
+dim(prices)
+  
+```
+### Convert Individual Daily Prices Prices to Portfolio Monthly Return
+
+```{r}
+w <- c(.25,
+       .25,
+       .20,
+       .20,
+       .10)
+```
+
+Portfolio Returns in the 'xts' world
+
+Convert monthly returns
+
+```{r}
+prices_monthly <- to.monthly(prices, indexAt = "lastof", OHLC = FALSE) # get the prices of last of every month
+
+asset_returns_xts <- na.omit(Return.calculate(prices_monthly, method = "log"))
+
+
+```
+
+
+Convert to portfolio returns
+```{r}
+portfolio_returns_xts_rebalanced_monthly <-  Return.portfolio(asset_returns_xts,
+                                                              weights = w,
+                                                              rebalance_on = "months") %>%
+  `colnames<-`("returns")
+
+portfolio_returns_xts_rebalanced_monthly %>% 
+  head()
+# dates in xts structure are stored in index
+index(portfolio_returns_xts_rebalanced_monthly) 
+
+
+```
+
+
+
+
+Portfolio returns in the tidyverse
+
+First get monthly returns of individual ETFs
+```{r}
+asset_returns_dplyr_byhand <- 
+  prices %>%
+  to.monthly(indexAt = "lastof", OHLC = F) %>%
+  #convert index to date 
+  data.frame(date = index(.)) %>%
+  remove_rownames() %>%
+  gather(asset, returns, -date) %>%
+  group_by(asset) %>%
+  mutate(returns = (log(returns) - lag(log(returns))))%>%
+  # this spreads the each asset class into a column and then it 
+  # puts the returns on each asset in that column
+  spread(asset,returns) %>%
+  select(date, symbols) %>%
+  na.omit()
+```
+Use `case_when()` to assign weights
+```{r}
+portfolio_returns_dplyr_byhand <-
+  asset_returns_dplyr_byhand %>%
+  gather(asset, returns, -date)%>%
+  group_by(asset) %>%
+  mutate(weights = case_when(asset == symbols[1] ~ w[1],
+                             asset == symbols[2] ~ w[2],
+                             asset == symbols[3] ~ w[3],
+                             asset == symbols[4] ~ w[4],
+                             asset == symbols[5] ~ w[5]),
+         weighted_returns = returns * weights) %>%
+  group_by(date) %>%
+  summarise(returns = sum(weighted_returns))
+
+portfolio_returns_dplyr_byhand %>% 
+  head()
+```
+
+Portfolio returns in the tidyquant world using `tq_portfolio()`
+
+```{r}
+portfolio_returns_tq_rebalanced_monthly <- 
+  asset_returns_dplyr_byhand %>%
+  gather(asset, returns, -date) %>%
+  tq_portfolio(assets_col = asset,
+               returns_col = returns,
+               weights = w,
+               col_rename = "returns",
+               rebalance_on = "months")
+portfolio_returns_tq_rebalanced_monthly %>%
+  head()
+```
+Always check for consistent results ie make sure the returns are all the same
+
+
+### Portfolio Risk, or Vol, or Standard Deviation
+
+Calculate Risk, volatility, of portfolio
+
+We will go through how to do so using `xts`, tidyverse and `tidyquant`,
+
+Standard Deviation in the `xts` world
+
+use built in stdev function
+
+```{r}
+portfolio_sd_xts_builtin <- 
+  StdDev(portfolio_returns_xts_rebalanced_monthly)
+
+portfolio_sd_xts_builtin_percent <- 
+  round(portfolio_sd_xts_builtin * 100, 2) 
+
+portfolio_sd_xts_builtin_percent
+```
+
+other builtin functions that would be extremely useful
+```{r}
+table.DownsideRisk(portfolio_returns_xts_rebalanced_monthly)
+table.Drawdowns(portfolio_returns_xts_rebalanced_monthly)
+SemiDeviation(portfolio_returns_xts_rebalanced_monthly)
+SharpeRatio(portfolio_returns_xts_rebalanced_monthly)
+```
+
+
+```{r}
+portfolio_sd_tidy_builtin_percent <- 
+  portfolio_returns_dplyr_byhand %>%
+  summarise(
+    sd = sd(returns),
+    sd_byhand = sqrt(sum((returns - mean(returns))^2)/(nrow(.)-1))) %>%
+  mutate(dplyr = round(sd, 4)* 100,
+         dplyr_byhand = round(sd_byhand, 4) * 100)
+
+portfolio_sd_tidy_builtin_percent
+```
+
+`Tidyquant` is a good bridge between these two using `table.Stats`
+```{r}
+portfolio_sd_tidyquant_builtin_percent <-
+  portfolio_returns_tq_rebalanced_monthly %>%
+  tq_performance(Ra = returns,
+                 Rb = NULL,
+                 performance_fun = table.Stats)%>%
+  select(Stdev) %>%
+  mutate(tq_sd = round(Stdev, 4) * 100)
+
+portfolio_sd_tidyquant_builtin_percent
+```
+Visualizing Standard Deviation and Returns
+
+Returns
+
+```{r}
+portfolio_returns_dplyr_byhand %>%
+  ggplot(aes(x = date, y = returns)) +
+  geom_point(color = "cornflowerblue") +
+  scale_x_date(breaks = scales::pretty_breaks(n = 6)) +
+  ggtitle("Scatterplot of Returns by Date") +
+  theme(plot.title = element_text(hjust = .5))
+```
+SD plot
+```{r}
+sd_plot <-
+  sd(portfolio_returns_tq_rebalanced_monthly$returns)
+
+mean_plot <- 
+  mean(portfolio_returns_tq_rebalanced_monthly$returns)
+
+portfolio_returns_tq_rebalanced_monthly %>%
+  mutate(hist_col_red = ifelse(returns < (mean_plot - sd_plot),
+                               returns, as.numeric(NA)),
+         hist_col_green = ifelse(returns > (mean_plot + sd_plot),
+                               returns, as.numeric(NA)),
+         hist_col_blue = ifelse(returns > (mean_plot - sd_plot) & 
+                                  returns < (mean_plot +  sd_plot), returns, as.numeric(NA)))%>%
+  ggplot(aes(x = date)) +
+  geom_point(aes(y = hist_col_red),
+             color = "red") +
+  geom_point(aes(y = hist_col_blue),
+             color = "blue") +
+  geom_point(aes(y = hist_col_green),
+             color = "green") +
+  labs(title = "Colored Scatter", y = "monthly returns") +
+  scale_color_date(breaks = scales::pretty_breaks(n = 8))+
+  theme(plot.title = element_text(hjust = .5))
+  
+```
+```{r}
+asset_returns_dplyr_byhand %>%
+  gather(asset, returns, -date) %>%
+  group_by(asset) %>%
+  summarize(sd = 100 * sd(returns)) %>%
+  add_row(asset = "Portfolio",
+          sd = portfolio_sd_tidy_builtin_percent$dplyr) %>%
+  ggplot(aes(x= asset,
+             y = sd,
+             color = asset)) +
+  geom_point() +
+  geom_text(aes(label = asset),
+            nudge_y = .2) +
+  labs(title = "Std Dev Returns of Each Asset",
+       y = "standard dev") +
+  scale_y_continuous(labels = function(x) paste0(x, "%"))+
+  theme(plot.title = element_text(hjust = .5))
+
+
+# the end
+```
+ 
+
